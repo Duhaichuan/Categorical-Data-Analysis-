@@ -1,0 +1,512 @@
+---
+title: "categories_project"
+author: "Haichuan Du"
+date: "4/17/2020"
+output:
+  word_document: default
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(tidyverse)
+library(dplyr) # Lirary for spliting train & test dataset
+library(corrplot) # Plotting nice correlation matrix
+library(caret)
+library(pROC) # For checking ROC Curve of the model
+library(ROCR)
+library(MASS)
+library(bestglm)
+library(brglm)
+library(psych)
+library(ResourceSelection)
+library(lmtest)
+library(gmodels)
+library(mice)
+library(nnet)
+library(VIM)
+library(glmnet)
+```
+
+```{r}
+setwd("/Users/haidu/Desktop/statistics/Categorical\ Data\ Analysis\ /project")
+loan <- read.csv("loan.csv", header=T, na.strings=c("","NA"))
+loan_data <- loan
+attach(loan_data)
+loan_data <- dplyr::select(loan_data, -Loan_ID) #Removing Loan_ID as it has no logical corelation
+head(loan_data)
+```
+
+```{r}
+sum(is.na(loan_data))  ## Checking for total missing values
+colSums(is.na(loan_data)) ##  checking for any missing values in the feature
+aggr(loan,prop=FALSE,numbers=TRUE)
+```
+
+## Explore data visually
+```{r}
+ggplot(data=loan_data) +
+  geom_point(aes(x=LoanAmount, y=Loan_Status, color=Property_Area)) 
+
+ggplot(data=loan_data) +
+  geom_bar(aes(x=Loan_Status,color=Loan_Status)) 
+
+ggplot(data=loan_data) +
+  geom_bar(aes(x=Loan_Amount_Term, fill=Loan_Status ))
+
+ggplot(data=loan_data) +
+  geom_histogram(aes(x=LoanAmount), bins = 50)
+
+ggplot(data=loan_data) +
+  geom_histogram(aes(x=ApplicantIncome))
+
+ggplot(data=loan_data) +
+  geom_histogram(aes(x=CoapplicantIncome ))
+
+ggplot(data=loan_data) +
+  geom_bar(aes(x=Credit_History, fill=Loan_Status))
+
+ggplot(data=loan_data) +
+  geom_bar(aes(x=Dependents,fill=Loan_Status ))
+
+ggplot(data=loan_data) +
+  geom_bar(aes(x=Education, fill=Loan_Status))
+
+ggplot(data=loan_data) +
+  geom_bar(aes(x=Married, fill=Loan_Status))
+
+#Making Contingency Table to check percentage of Credit_History in relation with  loan status
+CrossTable(loan_data$Loan_Status, loan_data$Credit_History,prop.r = TRUE, prop.c = FALSE, prop.t = FALSE,
+           prop.chisq = FALSE)
+
+CrossTable(loan_data$Loan_Status, loan_data$Married,prop.r = TRUE, prop.c = FALSE, prop.t = FALSE,
+           prop.chisq = FALSE )
+
+CrossTable(loan_data$Loan_Status, loan_data$Education,prop.r = TRUE, prop.c = FALSE, prop.t = FALSE,
+           prop.chisq = FALSE )
+
+CrossTable(loan_data$Loan_Status, loan_data$Self_Employed,prop.r = TRUE, prop.c = FALSE, prop.t = FALSE,
+           prop.chisq = FALSE )
+
+CrossTable(loan_data$Loan_Status, loan_data$Property_Area,prop.r = TRUE, prop.c = FALSE, prop.t = FALSE,
+           prop.chisq = FALSE )
+```
+
+## Handling Null, Missing and Categorical Variables
+inputs the mean into the missing values, similary for categorical variable, we can use the category that apperars the most frequently
+```{r}
+loan_data <- loan_data %>% 
+  mutate(LoanAmount=ifelse(is.na(LoanAmount), mean(LoanAmount, na.rm = T), LoanAmount),
+         Loan_Amount_Term=ifelse(is.na(Loan_Amount_Term), median(Loan_Amount_Term, na.rm = T), Loan_Amount_Term),
+         Credit_History=ifelse(is.na(Credit_History), 1, Credit_History))
+```
+
+## Handling  Outlier
+(Replace outlier with lower and upper cutoff value)
+using the rule of thumb where upper limit is computed as 1.5 * IRQ, where IRQ = 3rd Quartile – 1st Quartile. 
+```{r}
+#scatter plot  to detect outliers for ApplicantIncome
+plot(ApplicantIncome, ylab = "ApplicantIncome")
+
+outliers_upperlimit_AppIncome <- quantile(ApplicantIncome, 0.75) + 1.5 * IQR(ApplicantIncome) # upper_limit = 10171.25
+index.outliers.ApplicantIncome <- which(ApplicantIncome > outliers_upperlimit_AppIncome | ApplicantIncome < 0 ) # 50 outliers
+loan_data <- loan_data[-index.outliers.ApplicantIncome,] #Removing observations
+plot(loan_data$ApplicantIncome, ylab = "ApplicantIncome") 
+
+# detect outliers for CoapplicantIncome
+plot(loan_data$CoapplicantIncome, ylab = "CoapplicantIncome")
+outliers_upperlimit_CoIncome <- quantile(loan_data$CoapplicantIncome, 0.75) + 1.5 * IQR(loan_data$CoapplicantIncome) 
+index.outliers.CoIncome <- which(loan_data$CoapplicantIncome > outliers_upperlimit_CoIncome | loan_data$CoapplicantIncome < 0 ) 
+loan_data <- loan_data[-index.outliers.CoIncome,] #Removing observations
+plot(loan_data$CoapplicantIncome, ylab = "CoapplicantIncome")  
+
+# Treatment of outlier for LoanAmount
+plot(loan_data$LoanAmount, ylab = "LoanAmount")
+outliers_upperlimit_LoanAmount <- quantile(loan_data$LoanAmount, 0.75) + 1.5 * IQR(loan_data$LoanAmount) 
+index.outliers.LoanAmount <- which(loan_data$LoanAmount > outliers_upperlimit_LoanAmount | loan_data$LoanAmount < 0 ) 
+loan_data <- loan_data[-index.outliers.LoanAmount,] #Removing observations
+plot(loan_data$LoanAmount, ylab = "LoanAmount")  
+```
+
+## Transform the categorical data
+create dummy variables for categorical attributes 
+```{r}
+#I converted the Dependents variable to a continuous variable in order
+loan_data$Dependents=as.numeric(substr(loan_data$Dependents,1,1)) 
+
+loan_data <- loan_data %>%
+  mutate(Gender=ifelse(Gender=="Male",1,0),
+         Married=ifelse(Married=="Yes",1,0),
+         Education=ifelse(Education=="Graduate",1,0),
+         Self_Employed=ifelse(Self_Employed=="Yes",1,0),
+         Loan_Status=ifelse(Loan_Status=="Y",1,0))
+
+#deal with missing value again, for catergorical data, use the category that appears most frequently
+loan_data <- loan_data %>%
+  mutate(Gender=ifelse(is.na(Gender),1,Gender),
+         Married=ifelse(is.na(Married),1,Married),
+         Dependents=ifelse(is.na(Dependents),0,Dependents),
+         Self_Employed=ifelse(is.na(Self_Employed),0,Self_Employed))
+
+# More than 2 unique values treatment
+loan_data$Urban <- ifelse(loan_data$Property_Area=="Urban",1,0)
+loan_data$Rural <- ifelse(loan_data$Property_Area=="Rural",1,0)
+loan_data$Semiurban <-ifelse(loan_data$Property_Area=="Semiurban",1,0)
+
+```
+
+#check for correlation between the variables
+exploratory data analysis is to check correlations among all variables 
+```{r}
+cor(loan_data[, sapply(loan_data, class) != "factor" ],) #Checking multicollinearity 
+
+# graph check multicollinearity
+correlation <- loan_data[sapply(loan_data, is.numeric)]
+descrCorr <- cor(correlation)
+corrplot(descrCorr)
+
+pairs.panels(loan_data)
+```
+
+## Building Logistic Regression Model1 by using Multiple Imputation dataset
+```{r}
+# let's take a look initial model
+head(loan_data)
+loan_data_R <- dplyr::select(loan_data, -Property_Area)
+reg1 <- glm(Loan_Status~., family = binomial, data = loan_data_R)
+summary(reg1)
+cor(loan_data_R$Loan_Status, fitted(reg1))  #0.60
+hoslem.test(loan_data_R$Loan_Status, fitted(reg1))  #p-value = 0.4663
+
+####################################################################################
+
+#mice treating missing valued by using the loan data = origional data
+
+loan <- dplyr::select(loan,-Loan_ID)
+
+aggr(loan,prop=FALSE,numbers=TRUE)
+aggr(loan,prop=TRUE,numbers=TRUE)
+
+#Multiple Imputation
+imps = mice(loan)
+
+library(lattice)
+densityplot(imps)
+
+#What we would like to see is that the shape of the magenta points (imputed) matches the shape of the blue ones (observed). The matching shape tells us that the imputed values are indeed “plausible values”.The density of the imputed data for each imputed dataset is showed in magenta while the density of the observed data is showed in blue. Again, under our previous assumptions we expect the distributions to be similar.
+
+#mice reg model
+fit_mcie = with(imps, glm(loan$Loan_Status~., family = binomial, data = loan))
+Final_micefit <- pool(fit_mcie)
+summary(Final_micefit)
+
+# porpuslful selection
+#step1
+summary(pool(with(imps, glm(loan$Loan_Status~Gender, family = binomial, data = loan))))
+summary(pool(with(imps, glm(loan$Loan_Status~Married, family = binomial, data = loan))))
+summary(pool(with(imps, glm(loan$Loan_Status~Dependents, family = binomial, data = loan))))
+summary(pool(with(imps, glm(loan$Loan_Status~Education, family = binomial, data = loan))))
+summary(pool(with(imps, glm(loan$Loan_Status~Self_Employed, family = binomial, data = loan))))
+summary(pool(with(imps, glm(loan$Loan_Status~ApplicantIncome, family = binomial, data = loan))))
+summary(pool(with(imps, glm(loan$Loan_Status~CoapplicantIncome, family = binomial, data = loan))))
+summary(pool(with(imps, glm(loan$Loan_Status~LoanAmount, family = binomial, data = loan))))
+summary(pool(with(imps, glm(loan$Loan_Status~Loan_Amount_Term, family = binomial, data = loan))))
+summary(pool(with(imps, glm(loan$Loan_Status~Credit_History, family = binomial, data = loan))))
+summary(pool(with(imps, glm(loan$Loan_Status~Property_Area, family = binomial, data = loan))))
+#we find that Married， Education， CoapplicantIncome, and Credit_History have p-values less than 0.2. 
+
+summary(pool(with(imps, glm(loan$Loan_Status~Married+Education+CoapplicantIncome
+                            +Credit_History, family = binomial, data = loan))))
+
+#step2
+summary(pool(with(imps, glm(loan$Loan_Status~Married+Education+Credit_History, family = binomial, data = loan))))
+
+summary(pool(with(imps, glm(loan$Loan_Status~Married+Credit_History, family = binomial, data = loan))))
+
+
+#step3 
+summary(pool(with(imps, glm(loan$Loan_Status~Married+Credit_History       
+                            +Dependents, family = binomial, data = loan))))
+
+summary(pool(with(imps, glm(loan$Loan_Status~Credit_History+Married     
+                            +Education, family = binomial, data = loan))))
+
+summary(pool(with(imps, glm(loan$Loan_Status~Credit_History+Married     
+                            +Self_Employed, family = binomial, data = loan))))
+
+summary(pool(with(imps, glm(loan$Loan_Status~Credit_History+Married     
+                            +ApplicantIncome, family = binomial, data = loan))))
+
+summary(pool(with(imps, glm(loan$Loan_Status~Credit_History+Married     
+                            +CoapplicantIncome, family = binomial, data = loan))))
+
+summary(pool(with(imps, glm(loan$Loan_Status~Credit_History+Married     
+                            +LoanAmount, family = binomial, data = loan))))       # only Loan_amount change Marries by at 10%
+
+summary(pool(with(imps, glm(loan$Loan_Status~Credit_History+Married     
+                            +Loan_Amount_Term, family = binomial, data = loan))))
+
+summary(pool(with(imps, glm(loan$Loan_Status~Credit_History+Married     
+                            +Credit_History, family = binomial, data = loan))))
+
+summary(pool(with(imps, glm(loan$Loan_Status~Credit_History+Married     
+                            +Property_Area, family = binomial, data = loan))))
+
+
+#step4:Attempt adding plausible interactions among variables in the model, usually using somewhat stricter standards such a p-value<0.05 (can consider non-linear predictor terms, like quadratic effects, in this step as well).
+
+summary(pool(with(imps, glm(loan$Loan_Status~Credit_History+Married     
+                            +LoanAmount + Credit_History:Married, family = binomial, data = loan))))   
+
+summary(pool(with(imps, glm(loan$Loan_Status~Credit_History+Married     
+                            +LoanAmount + Married:LoanAmount, family = binomial, data = loan))))    
+
+summary(pool(with(imps, glm(loan$Loan_Status~Credit_History+Married     
+                            +LoanAmount + Credit_History:LoanAmount,
+                            family = binomial, data = loan))))     # Credit_History:LoanAmount p = 0.034
+
+summary(pool(with(imps, glm(loan$Loan_Status~Credit_History+Married     
+                            +LoanAmount+Credit_History:LoanAmount+I(LoanAmount^2), family = binomial, data = loan))))     # Credit_History:LoanAmount p = 0.046
+
+# Conclusion：model included: Credit_History,  Married, LoanAmount,  Credit_History*LoanAmount
+
+
+########################################################################
+#complete the missing value by using final model predictor see what's going on
+one_of_dataset <- complete(imps,1)
+model1 <-glm(Loan_Status~Credit_History+Married+LoanAmount+
+                        Credit_History:LoanAmount, family = binomial, data = one_of_dataset)
+
+rocplotone11 <- roc(one_of_dataset$Loan_Status ~ fitted(model1), data = one_of_dataset)
+plot.roc(rocplotone11, print.auc = TRUE)
+auc(rocplotone11)      #0.78 Auc depdent on different dataset
+
+
+#using different complete dataset and stepAIC() see what's going on, 
+stepAIC(glm(Loan_Status~., family = binomial, data = one_of_dataset))
+
+#run the smallest AIC
+aci_model<-glm(formula = Loan_Status ~ Married + Credit_History + Property_Area, 
+    family = binomial, data = one_of_dataset)
+
+#ROC
+rocplotone <- roc(one_of_dataset$Loan_Status ~ fitted(aci_model), data = one_of_dataset)
+plot.roc(rocplotone, print.auc = TRUE)
+auc(rocplotone)
+
+```
+
+## Building Logistic Regression Model2 withdataset that replaced by using the mean of each feature separately
+```{r}
+#Purposeful Model Selection  
+##step1 Fit “simple” logistic regression models for each of the predictors separately.
+#Eliminate any predictor values with large p-values (say >0.2).
+
+summary(glm(Loan_Status ~ Gender, family=binomial, data = loan_data_R))
+summary(glm(Loan_Status ~ Married, family=binomial, data = loan_data_R))
+summary(glm(Loan_Status ~ Dependents, family=binomial, data = loan_data_R))
+summary(glm(Loan_Status ~ Education, family=binomial, data = loan_data_R))
+summary(glm(Loan_Status ~ Self_Employed, family=binomial, data = loan_data_R))
+summary(glm(Loan_Status ~ ApplicantIncome, family=binomial, data = loan_data_R))
+summary(glm(Loan_Status ~ CoapplicantIncome, family=binomial, data = loan_data_R))
+summary(glm(Loan_Status ~ LoanAmount, family=binomial, data = loan_data_R))
+summary(glm(Loan_Status ~ Loan_Amount_Term, family=binomial, data = loan_data_R))
+summary(glm(Loan_Status ~ Credit_History, family=binomial, data = loan_data_R))
+summary(glm(Loan_Status ~ Urban, family=binomial, data = loan_data_R))
+summary(glm(Loan_Status ~ Rural, family=binomial, data = loan_data_R))
+
+summary(glm(formula=Loan_Status ~ Married + Education + CoapplicantIncome + Credit_History + Rural, family=binomial, data = loan_data_R))
+
+#step2 Conduct forward stepwise selection with remaining predictors, usually using a more stringent cut-off, such as p-value<0.1 or perhaps AIC/BIC. 
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History + Rural, family=binomial, data=loan_data_R))
+
+
+#step3 Consider adding in any variables that were not included in the model after Step 1 or Step 2.  A predictor can be added in even if p-value>0.1 if the AIC/BIC is lower or if it changes the estimated β coefficients by at least, say, 10%.
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + Urban, family=binomial, data = loan_data_R))            # chnage rural by at 50%
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + Semiurban, family=binomial, data = loan_data_R))        
+
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + Loan_Amount_Term, family=binomial, data = loan_data_R))        
+
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + LoanAmount, family=binomial, data = loan_data_R))  
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + CoapplicantIncome, family=binomial, data = loan_data_R))        #change married by aroudn 18%
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + ApplicantIncome, family=binomial, data = loan_data_R))      
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + Self_Employed, family=binomial, data = loan_data_R))     
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + Dependents, family=binomial, data = loan_data_R))        
+
+
+# we adding back semiurban first
+
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + Urban, family=binomial, data = loan_data_R))        # chnage rural by more than 50%
+
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + Urban + CoapplicantIncome, family=binomial, data = loan_data_R))       #chnage married about 17% and rural about 30%
+
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + Urban + CoapplicantIncome + LoanAmount, family=binomial, data = loan_data_R))       #chnage over 10%
+
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + Urban + CoapplicantIncome + LoanAmount + Dependents, family=binomial, data = loan_data_R))      
+
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + Urban + CoapplicantIncome + LoanAmount + ApplicantIncome, family=binomial, data = loan_data_R))     
+
+#the following are just roughtly change near 10% but p valur is very large we just ingore
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + Urban + CoapplicantIncome + LoanAmount + Self_Employed, family=binomial, data = loan_data_R))      
+
+
+#4Attempt adding plausible interactions among variables in the model,considering interactions as follows does not produce anything extra
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + Urban + CoapplicantIncome + LoanAmount + LoanAmount:Credit_History, family=binomial, data = loan_data_R))       
+
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History 
+            + Rural + Urban + CoapplicantIncome + LoanAmount + LoanAmount:Education, family=binomial, data = loan_data_R))    
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History
+            + Rural+ Urban + LoanAmount +CoapplicantIncome + Married:Credit_History, family=binomial, data = loan_data_R))
+
+summary(glm(formula=Loan_Status ~ Married + Education + Credit_History
+            + Rural+ Urban + LoanAmount +CoapplicantIncome + LoanAmount:CoapplicantIncome, family=binomial, data = loan_data_R))
+
+
+# thus, the finla model included these presictors
+# Married, Credit_History, Urban, Rural,Education, CoapplicantIncome, LoanAmount
+
+hand_best_model_dataset <-dplyr::select(loan_data_R, Married, Credit_History, Urban, Rural,Education, CoapplicantIncome, Loan_Status, LoanAmount)
+
+bestModel <- glm(Loan_Status ~ Married + Credit_History + Urban + Rural 
+                 + Education + CoapplicantIncome + LoanAmount, family = binomial, data = loan_data_R)
+summary(bestModel)
+
+
+cor(hand_best_model_dataset$Loan_Status, fitted(bestModel)) # R=0.6 is useful for comparing fits of different models for the same data.
+
+#ROC
+rocBestModel <- roc(hand_best_model_dataset$Loan_Status ~ fitted(bestModel))
+plot.roc(rocBestModel, print.auc = TRUE)
+auc(rocBestModel) #0.81
+
+#hoslem.test
+hoslem.test(loan_data_R$Loan_Status, fitted(bestModel)) #0.06623
+
+
+#Confusion Matrix
+fit123 = predict(bestModel, newdata = loan_data_R, type = 'response') 
+# If results are more than 50% then convert to 1 else 0
+fit123 = ifelse(fit123 >=0.5,1,0) #Setting cut-off to be at 0.5
+# Evaluate predictions on the training dataset through Confusion Matrix
+cnf_matrix = table(predicted = fit123, actual = loan_data_R$Loan_Status)
+cnf_matrix
+TN = cnf_matrix[1,1] # True Negative - Actual & Predicted is 0/N
+TP = cnf_matrix[2,2] # True Positive - Actual & Predicted is 1/Y
+FP = cnf_matrix[2,1] # False Positive - Actual is 0/N but Predicted is 1/Y
+FN = cnf_matrix[1,2] # False Nefgative - Actual is 1/Y but Predicted is 0/N
+TO = TN+TP+FP+FN # Total Observations
+
+accuracy = (TP+TN)/TO # Accuracy or Prevalance of Confusion Matrix = 0.82
+accuracy
+precision = TP/(TP+FP) # Precision = 0.80
+precision
+sensitivity = TP/(TP+FN) # True Positive Rate = 0.98
+sensitivity
+error = (FP+FN)/TO # Error Rate=0.18
+error
+specificity = TN/(TN+FP)
+specificity      #0.45
+G=sqrt(specificity*sensitivity) ##G-mean=0.67
+G
+
+
+####################################################################################
+#Aautomatic backward selection
+summary(reg1)
+reg2 <- update(reg1,.~.-Semiurban)
+summary(reg2)
+stepAIC(reg2, direction = "backward")
+```
+
+## Fit the lasso regression model
+
+```{r}
+x<-cbind(loan_data_R$Married, loan_data_R$Education, loan_data_R$CoapplicantIncome,
+    loan_data_R$LoanAmount, loan_data_R$Credit_History, loan_data_R$Urban, loan_data_R$Rural,
+    loan_data_R$Gender, loan_data_R$Dependents, loan_data_R$Self_Employed, loan_data_R$ApplicantIncome, loan_data_R$Loan_Amount_Term +loan_data_R$Semiurban)  # Combine variables by column
+
+y<-loan_data_R$Loan_Status
+
+grid<-10^seq(10,-2, length=100)        # Create a grid of lambda values
+lasso.mod=cv.glmnet(x,y,lambda=grid,   # Build a CV lasso regression          
+nfold=length(y),                       # nfold=sample size, leave-one-out CV
+alpha=1)                               # alpha=0, lasso reg is fit
+
+## Ignore the received warning which recommends leaving 3-or-more out in CV ## 
+#Warning message:
+#Option grouped=FALSE enforced in cv.glmnet, since < 3 observations per fold 
+
+plot(log10(lasso.mod$lambda), lasso.mod$cvm,      # Plot average CV error versus log(lambda)
+xlab="log10(Lambda)", ylab="CV Error")                     
+abline(v = log10(lasso.mod$lambda.min), lty = 3)
+
+(lambda=lasso.mod$lambda.min)        # The lambda that minimizes CV error
+
+predict(lasso.mod,s=lambda,          # Obtain lasso reg coefs
+type="coefficients")
+
+
+#Confusion Matrix
+fit1234 = predict(lasso.mod, newx = x, type = 'response') 
+# If results are more than 50% then convert to 1 else 0
+fit1234 = ifelse(fit1234 >=0.5,1,0) #Setting cut-off to be at 0.5
+# Evaluate predictions on the training dataset through Confusion Matrix
+cnf_matrix2 = table(predicted = fit1234, actual = loan_data_R$Loan_Status)
+cnf_matrix2
+TN2 = cnf_matrix2[1,1] # True Negative - Actual & Predicted is 0/N
+TP2 = cnf_matrix2[2,2] # True Positive - Actual & Predicted is 1/Y
+FP2 = cnf_matrix2[2,1] # False Positive - Actual is 0/N but Predicted is 1/Y
+FN2 = cnf_matrix2[1,2] # False Nefgative - Actual is 1/Y but Predicted is 0/N
+TO2 = TN2+TP2+FP2+FN2 # Total Observations
+
+accuracy2 = (TP2+TN2)/TO2 # Accuracy or Prevalance of Confusion Matrix
+accuracy2
+precision2 = TP2/(TP2+FP2) 
+precision2
+sensitivity2 = TP2/(TP2+FN2) 
+sensitivity2
+error2 = (FP2+FN2)/TO2 
+error2
+specificity2 = TN2/(TN2+FP2)
+specificity2    
+
+#G-mean
+G2=sqrt(specificity2*sensitivity2) 
+G2
+
+```
+
